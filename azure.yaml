@@ -1,0 +1,6 @@
+name: octo-mcp-server
+services:
+  api:
+    project: .
+    language: python
+    host: function

@@ -1,8 +1,20 @@
-# Dependencies
-node_modules/
-
-# Build output
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
 dist/
+build/
+
+# uv
+.python-version
+
+# Azure Functions local settings (contains secrets)
+local.settings.json
+
+# Azurite local storage
+.azurite/
 
 # Environment
 .env
@@ -15,4 +27,6 @@ dist/
 
 # Logs
 *.log
-npm-debug.log*
+
+# Node (legacy — no longer used)
+node_modules/

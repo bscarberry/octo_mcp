@@ -1,191 +1,143 @@
 # octo-mcp-server
 
-A production-ready [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server built with Node.js, TypeScript, and Express. It uses HTTP + SSE (Server-Sent Events) as the transport so it can be deployed remotely and serve multiple clients concurrently.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server built with Python and [FastMCP](https://github.com/anthropics/python-sdk), hosted on **Azure Functions** using the custom handler pattern. It uses the `streamable-http` transport and is designed for stateless, serverless deployment on the Flex Consumption plan.
 
 ## Project structure
 
 ```
-src/
-  index.ts        # Entry point — creates Express app, mounts /sse and /message routes
-  server.ts       # MCP server factory, session registry, message routing
-  tools/
-    echo.ts       # Example tool: returns its input unchanged
-Dockerfile
-tsconfig.json
-package.json
-.env.example
+server.py              # FastMCP server — all tools defined here
+host.json              # Azure Functions custom handler config (required)
+pyproject.toml         # Python project metadata and dependencies (uv)
+azure.yaml             # Azure Developer CLI (azd) project config
+.env.example           # Template for local.settings.json
+Dockerfile             # Container image (optional; azd deploy preferred)
+infra/                 # Bicep IaC for provisioning Azure resources (optional)
 ```
 
 ## Adding a new tool
 
-1. Create `src/tools/my-tool.ts` and export a `registerMyTool(server: McpServer)` function:
+Add a decorated function to `server.py`:
 
-```ts
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as z from 'zod/v4';
+```python
+@mcp.tool()
+async def my_tool(input: str) -> str:
+    """
+    Description shown to the MCP client.
 
-export function registerMyTool(server: McpServer): void {
-  server.tool(
-    'my-tool',
-    'Description shown to the LLM',
-    { input: z.string() },
-    async ({ input }) => ({
-      content: [{ type: 'text', text: `Result: ${input}` }],
-    }),
-  );
-}
+    Args:
+        input: Description of the parameter.
+    """
+    result = await call_some_api(input)
+    return str(result)
 ```
 
-2. Import and call it in `src/server.ts`:
-
-```ts
-import { registerMyTool } from './tools/my-tool.js';
-// inside createMcpServer:
-registerMyTool(server);
-```
-
-That's it.
+That's it — FastMCP registers the tool automatically.
 
 ## Local development
 
 ### Prerequisites
 
-- Node.js ≥ 18
-- npm
+- Python ≥ 3.11
+- [uv](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [Azure Functions Core Tools](https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local)
+- (Optional) [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite) for local storage emulation
 
 ### Setup
 
+1. Create `local.settings.json` from the example:
+
 ```bash
-cp .env.example .env          # edit PORT or add API keys as needed
-npm install
-npm run build
-npm start
+cp .env.example local.settings.json
 ```
 
-The server starts on `http://localhost:3000` (or whatever `PORT` is set to).
+`local.settings.json` is gitignored and never committed.
 
-### Verify with curl
+2. Start the server:
 
 ```bash
-# Health check
-curl http://localhost:3000/health
+uv run func start
+```
 
-# Open an SSE stream (keep this terminal open)
-curl -N http://localhost:3000/sse
-# You will see: event: endpoint\ndata: /message?sessionId=<ID>
+The MCP server starts on `http://localhost:7071`. The Azure Functions host proxies all requests to the FastMCP process on port 8000.
 
-# In another terminal, call the echo tool (replace <SESSION_ID>)
-curl -X POST "http://localhost:3000/message?sessionId=<SESSION_ID>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "echo",
-      "arguments": { "message": "hello world" }
+### Test with MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector@latest http://localhost:7071/mcp
+```
+
+### Configure VS Code Copilot
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "local-mcp-server": {
+      "type": "http",
+      "url": "http://localhost:7071/mcp"
     }
-  }'
+  }
+}
 ```
 
-### Available npm scripts
+## Deploy to Azure
 
-| Script        | Description                       |
-|---------------|-----------------------------------|
-| `npm run build` | Compile TypeScript → `dist/`    |
-| `npm start`     | Run the compiled server          |
-| `npm run dev`   | Run with ts-node (no compile)    |
-| `npm run clean` | Delete `dist/`                   |
+### Prerequisites
+
+- [Azure Developer CLI (azd)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
+- An Azure subscription
+
+### Deploy
+
+```bash
+azd auth login
+azd up
+```
+
+`azd up` provisions all infrastructure and deploys the Function App code. For code-only updates:
+
+```bash
+azd deploy
+```
+
+### Set environment variables in Azure
+
+```bash
+az functionapp config appsettings set \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --settings MY_API_KEY=your_value
+```
+
+### MCP endpoint URLs
+
+| Context | URL |
+|---------|-----|
+| Local | `http://localhost:7071/mcp` |
+| Azure | `https://<funcappname>.azurewebsites.net/mcp` |
 
 ## Docker
 
+The Dockerfile is provided for cases where a container image is needed. For standard Azure Functions deployment, use `azd up` instead.
+
 ```bash
-# Build
 docker build -t octo-mcp-server .
-
-# Run (pass environment variables with -e or --env-file)
-docker run -p 3000:3000 --env-file .env octo-mcp-server
+docker run -p 8000:8000 octo-mcp-server
 ```
-
-## Deploy to Azure Web App
-
-### Option A — Deploy a Docker container (recommended)
-
-1. **Push your image to a container registry** (Azure Container Registry, Docker Hub, etc.):
-
-```bash
-az acr build --registry <your-registry> --image octo-mcp-server:latest .
-```
-
-2. **Create the Web App** (Linux, Docker):
-
-```bash
-az group create --name rg-octo-mcp --location eastus
-
-az appservice plan create \
-  --name plan-octo-mcp \
-  --resource-group rg-octo-mcp \
-  --is-linux \
-  --sku B1
-
-az webapp create \
-  --name octo-mcp-server \
-  --resource-group rg-octo-mcp \
-  --plan plan-octo-mcp \
-  --deployment-container-image-name <your-registry>.azurecr.io/octo-mcp-server:latest
-```
-
-3. **Set environment variables**:
-
-```bash
-az webapp config appsettings set \
-  --name octo-mcp-server \
-  --resource-group rg-octo-mcp \
-  --settings PORT=3000 MY_API_KEY=...
-```
-
-4. **Enable Always On** so the server stays warm:
-
-```bash
-az webapp config set \
-  --name octo-mcp-server \
-  --resource-group rg-octo-mcp \
-  --always-on true
-```
-
-> **SSE note:** Azure App Service by default has a 230-second idle request timeout. For long-lived SSE connections you may need to send keep-alive comments or configure the timeout via `az webapp config set --http20-enabled true`.
-
-### Option B — Deploy from source with Oryx build
-
-1. Zip the source (exclude `node_modules` and `dist`):
-
-```bash
-zip -r deploy.zip . --exclude "node_modules/*" "dist/*" ".git/*"
-```
-
-2. Deploy:
-
-```bash
-az webapp deployment source config-zip \
-  --name octo-mcp-server \
-  --resource-group rg-octo-mcp \
-  --src deploy.zip
-```
-
-Azure will run `npm install && npm run build && npm start` automatically via the Oryx build system.
 
 ## Environment variables
 
-| Variable | Default | Description                    |
-|----------|---------|--------------------------------|
-| `PORT`   | `3000`  | TCP port the server listens on |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CUSTOM_HANDLER_PORT` | `8000` | Port the FastMCP server listens on — must match `host.json` |
 
-Add any tool-specific secrets (API keys, connection strings) here as well.
+Add tool-specific secrets (API keys, connection strings) to `local.settings.json` under `Values` for local dev, and as Azure App Settings for production.
 
-## API endpoints
+## Architecture notes
 
-| Method | Path       | Description                                           |
-|--------|------------|-------------------------------------------------------|
-| GET    | `/health`  | Returns `{"status":"ok","timestamp":"…"}`             |
-| GET    | `/sse`     | Opens an SSE stream; emits the POST endpoint + session ID |
-| POST   | `/message` | Receives JSON-RPC 2.0 messages (`?sessionId=<id>`)    |
+- Azure Functions acts as a managed host — it proxies all HTTP traffic to the FastMCP process running on port 8000.
+- The `configurationProfile: "mcp-custom-handler"` in `host.json` configures route proxying, removes the `/api` prefix, and sets auth to anonymous (auth is handled by EasyAuth at the platform layer).
+- A `404` on the root `/` at startup is expected — the Functions host pings `/` but FastMCP doesn't implement it.
+- Red log output from the MCP SDK on startup is cosmetic — it writes to `stderr`, which Functions renders in red.
+- `stateless_http=True` is required for compatibility with the Flex Consumption plan's scale-out behavior.

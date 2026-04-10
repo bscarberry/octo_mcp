@@ -1,30 +1,15 @@
-# ── Build stage ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
+# Install uv
+RUN pip install uv
 
-COPY tsconfig.json ./
-COPY src/ ./src/
-RUN npm run build
+COPY pyproject.toml ./
+RUN uv pip install --system --no-cache .
 
-# ── Production stage ───────────────────────────────────────────────────────
-FROM node:20-alpine AS production
+COPY server.py ./
 
-WORKDIR /app
+EXPOSE 8000
 
-# Copy only production dependencies
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-
-# Copy compiled output
-COPY --from=builder /app/dist ./dist
-
-# Expose default port (override with PORT env var)
-EXPOSE 3000
-
-ENV NODE_ENV=production
-
-CMD ["node", "dist/index.js"]
+CMD ["python", "server.py"]

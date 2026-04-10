@@ -1,0 +1,14 @@
+[project]
+name = "octo-mcp-server"
+version = "1.0.0"
+description = "MCP server hosted on Azure Functions (custom handler)"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]",
+    "httpx",
+    "azure-identity",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
