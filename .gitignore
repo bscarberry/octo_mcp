@@ -12,6 +12,8 @@ build/
 
 # Azure Functions local settings (contains secrets)
 local.settings.json
+# Keep the example template committed
+!local.settings.example.json
 
 # Azurite local storage
 .azurite/
