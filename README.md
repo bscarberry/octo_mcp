@@ -320,7 +320,7 @@ az functionapp config appsettings list \
   --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value" -o tsv
 ```
 
-If the value is not `python`, set it:
+If the value is not `custom`, set it:
 
 ```bash
 az functionapp config appsettings set \
@@ -461,8 +461,7 @@ Key design decisions:
 |----------|---------|-------------|
 | `CUSTOM_HANDLER_PORT` | `8000` | Port the FastMCP server binds to — must match `host.json` |
 | `AzureWebJobsStorage` | `UseDevelopmentStorage=true` | Storage connection string (Azurite locally; real account in Azure) |
-| `FUNCTIONS_WORKER_RUNTIME` | `python` | Required for this Python MCP hosting setup |
-| `AzureWebJobsFeatureFlags` | `EnableMcpCustomHandlerPreview` | Enables MCP custom-handler preview behavior in local/dev environments |
+| `FUNCTIONS_WORKER_RUNTIME` | `custom` | Required for Azure Functions custom handler routing |
 
 Add tool-specific secrets (API keys, connection strings) to `local.settings.json` under `Values` for local dev, and as Azure App Settings for production. Never commit secrets to source control.
 
@@ -523,7 +522,7 @@ When prompted:
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=python
+  --settings FUNCTIONS_WORKER_RUNTIME=custom
 ```
 
 #### 6) Day-2 workflow
@@ -579,7 +578,7 @@ When prompted:
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=python
+  --settings FUNCTIONS_WORKER_RUNTIME=custom
 ```
 
 #### 5) Day-2 workflow
@@ -602,6 +601,6 @@ Before enabling CI/CD:
 2. Tool discovery succeeds: MCP Inspector → `List Tools`
 3. One-time cloud deploy succeeds: `azd up`
 4. Cloud endpoint responds: `https://<funcappname>.azurewebsites.net/mcp`
-5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=python`
+5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=custom`
 
 This sequence is the shortest reliable path from local development to repeatable production deployment for this repo.
