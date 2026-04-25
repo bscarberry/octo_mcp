@@ -109,7 +109,8 @@ If you add tools that require API keys, add them under `Values` in `local.settin
   "IsEncrypted": false,
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "custom",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsFeatureFlags": "EnableMcpCustomHandlerPreview",
     "CUSTOM_HANDLER_PORT": "8000",
     "MY_API_KEY": "your_key_here"
   }
@@ -306,7 +307,9 @@ azd deploy
 
 ### Required App Setting after deploy
 
-The custom handler pattern requires `FUNCTIONS_WORKER_RUNTIME=custom` in Azure, not `python`. This is correct — it tells the Functions host to proxy HTTP to your process rather than use the built-in Python worker. Your Python code still runs; the host just doesn't manage it through the language worker.
+For this MCP hosting pattern, keep `FUNCTIONS_WORKER_RUNTIME=python` and make sure the MCP custom-handler profile remains enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`).  
+If you set `FUNCTIONS_WORKER_RUNTIME=custom` on a Python Function App stack, you can hit startup errors like:
+`Microsoft.Azure.WebJobs.Script.Grpc: WorkerConfig for runtime: custom not found.`
 
 Validate this setting immediately after `azd up`:
 
@@ -323,7 +326,7 @@ If the value is not `custom`, set it:
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=custom
+  --settings FUNCTIONS_WORKER_RUNTIME=python
 ```
 
 ### Set additional environment variables in Azure
@@ -442,7 +445,7 @@ Key design decisions:
 | `func: command not found` | Azure Functions Core Tools not installed | Install v4 (see prerequisites) |
 | `uv: command not found` | uv not installed | Install uv (see prerequisites) |
 | Port already in use (8000 or 7071) | Another process is running on those ports | Kill the process or change ports in `host.json` and `local.settings.json` |
-| `Routes configuration is only allowed for worker runtime: custom` | `FUNCTIONS_WORKER_RUNTIME` set to `python` | Set to `custom` in `local.settings.json` (local) and Azure App Settings (deployed) |
+| `WorkerConfig for runtime: custom not found` | `FUNCTIONS_WORKER_RUNTIME` was set to `custom` on a Python stack app | Set `FUNCTIONS_WORKER_RUNTIME=python`, keep `configurationProfile: "mcp-custom-handler"` in `host.json`, then restart |
 | `AzureWebJobsStorage` connection error | Azurite not running | Start Azurite in a separate terminal |
 | Claude Desktop: "not valid MCP server configurations" | Claude Desktop doesn't support `"type": "http"` directly | Use `mcp-remote` bridge — see Claude Desktop instructions above |
 | Tools not appearing in client | Server not initialized or wrong URL | Check MCP Inspector → List Tools; verify URL ends in `/mcp` |
