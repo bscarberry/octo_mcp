@@ -289,6 +289,7 @@ Restart `uv run func start` after adding tools.
 
 ```bash
 azd auth login
+azd version
 azd up
 ```
 
@@ -298,6 +299,43 @@ azd up
 3. Deploy the application code
 
 This takes 3–5 minutes on first run. You will see the deployed Function App URL at the end.
+
+### Important: this repo requires an `infra/main.bicep` file for `azd up`
+
+`azd up` runs **provision + deploy**. Provisioning requires Bicep infrastructure files, and by default `azd` looks for:
+
+```text
+infra/main.bicep
+```
+
+If that file does not exist, provisioning fails with an error like:
+
+```text
+failed to compile bicep template ... Could not find a part of the path '...\\infra\\main.bicep'
+```
+
+Before running `azd up`, confirm the file exists:
+
+```bash
+# macOS / Linux
+test -f infra/main.bicep && echo "infra/main.bicep found"
+
+# Windows (PowerShell)
+Test-Path .\infra\main.bicep
+```
+
+If `infra/main.bicep` is missing, use one of these options:
+
+1. Add the `infra/` folder from the source/template that this repo was created from, then run `azd up` again.
+2. If your infrastructure is already provisioned, skip provisioning and run deploy only:
+
+   ```bash
+   azd deploy
+   ```
+
+3. If you intended to create a brand-new azd project from existing code, re-run project initialization with infrastructure generation first, then run `azd up`.
+
+Also update azd when prompted (for example, `winget upgrade Microsoft.Azd` on Windows) before retrying.
 
 For code-only updates (after infrastructure is already provisioned):
 
@@ -451,6 +489,7 @@ Key design decisions:
 | Tools not appearing in client | Server not initialized or wrong URL | Check MCP Inspector → List Tools; verify URL ends in `/mcp` |
 | `/api/mcp` returns 404 | Default `/api` prefix not stripped | Ensure `configurationProfile: "mcp-custom-handler"` is set in `host.json` |
 | `azd up` fails on first run | Missing permissions or subscription not set | Run `azd auth login` and confirm the right subscription |
+| `azd up` fails with `Could not find ...\\infra\\main.bicep` | Infrastructure template file is missing | Add `infra/main.bicep` (and related `infra/` files) to the repo, or run `azd deploy` if infra is already provisioned |
 | Cold start timeouts (Azure) | Flex Consumption cold start | Keep `server.py` module-level init minimal |
 
 ---
@@ -461,7 +500,7 @@ Key design decisions:
 |----------|---------|-------------|
 | `CUSTOM_HANDLER_PORT` | `8000` | Port the FastMCP server binds to — must match `host.json` |
 | `AzureWebJobsStorage` | `UseDevelopmentStorage=true` | Storage connection string (Azurite locally; real account in Azure) |
-| `FUNCTIONS_WORKER_RUNTIME` | `custom` | Required for Azure Functions custom handler routing |
+| `FUNCTIONS_WORKER_RUNTIME` | `python` | Must stay `python` for this Functions + custom handler setup |
 
 Add tool-specific secrets (API keys, connection strings) to `local.settings.json` under `Values` for local dev, and as Azure App Settings for production. Never commit secrets to source control.
 
@@ -522,7 +561,7 @@ When prompted:
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=custom
+  --settings FUNCTIONS_WORKER_RUNTIME=python
 ```
 
 #### 6) Day-2 workflow
@@ -578,7 +617,7 @@ When prompted:
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=custom
+  --settings FUNCTIONS_WORKER_RUNTIME=python
 ```
 
 #### 5) Day-2 workflow
@@ -601,6 +640,6 @@ Before enabling CI/CD:
 2. Tool discovery succeeds: MCP Inspector → `List Tools`
 3. One-time cloud deploy succeeds: `azd up`
 4. Cloud endpoint responds: `https://<funcappname>.azurewebsites.net/mcp`
-5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=custom`
+5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=python`
 
 This sequence is the shortest reliable path from local development to repeatable production deployment for this repo.
