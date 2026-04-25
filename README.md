@@ -109,7 +109,8 @@ If you add tools that require API keys, add them under `Values` in `local.settin
   "IsEncrypted": false,
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "custom",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsFeatureFlags": "EnableMcpCustomHandlerPreview",
     "CUSTOM_HANDLER_PORT": "8000",
     "MY_API_KEY": "your_key_here"
   }
@@ -306,15 +307,26 @@ azd deploy
 
 ### Required App Setting after deploy
 
-The custom handler pattern requires `FUNCTIONS_WORKER_RUNTIME=custom` in Azure, not `python`. This is correct — it tells the Functions host to proxy HTTP to your process rather than use the built-in Python worker. Your Python code still runs; the host just doesn't manage it through the language worker.
+For this MCP hosting pattern, keep `FUNCTIONS_WORKER_RUNTIME=python` and make sure the MCP custom-handler profile remains enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`).  
+If you set `FUNCTIONS_WORKER_RUNTIME=custom` on a Python Function App stack, you can hit startup errors like:
+`Microsoft.Azure.WebJobs.Script.Grpc: WorkerConfig for runtime: custom not found.`
 
-Set this immediately after `azd up`:
+Validate this setting immediately after `azd up`:
+
+```bash
+az functionapp config appsettings list \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value" -o tsv
+```
+
+If the value is not `python`, set it:
 
 ```bash
 az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=custom
+  --settings FUNCTIONS_WORKER_RUNTIME=python
 ```
 
 ### Set additional environment variables in Azure
@@ -433,7 +445,7 @@ Key design decisions:
 | `func: command not found` | Azure Functions Core Tools not installed | Install v4 (see prerequisites) |
 | `uv: command not found` | uv not installed | Install uv (see prerequisites) |
 | Port already in use (8000 or 7071) | Another process is running on those ports | Kill the process or change ports in `host.json` and `local.settings.json` |
-| `Routes configuration is only allowed for worker runtime: custom` | `FUNCTIONS_WORKER_RUNTIME` set to `python` | Set to `custom` in `local.settings.json` (local) and Azure App Settings (deployed) |
+| `WorkerConfig for runtime: custom not found` | `FUNCTIONS_WORKER_RUNTIME` was set to `custom` on a Python stack app | Set `FUNCTIONS_WORKER_RUNTIME=python`, keep `configurationProfile: "mcp-custom-handler"` in `host.json`, then restart |
 | `AzureWebJobsStorage` connection error | Azurite not running | Start Azurite in a separate terminal |
 | Claude Desktop: "not valid MCP server configurations" | Claude Desktop doesn't support `"type": "http"` directly | Use `mcp-remote` bridge — see Claude Desktop instructions above |
 | Tools not appearing in client | Server not initialized or wrong URL | Check MCP Inspector → List Tools; verify URL ends in `/mcp` |
@@ -449,6 +461,147 @@ Key design decisions:
 |----------|---------|-------------|
 | `CUSTOM_HANDLER_PORT` | `8000` | Port the FastMCP server binds to — must match `host.json` |
 | `AzureWebJobsStorage` | `UseDevelopmentStorage=true` | Storage connection string (Azurite locally; real account in Azure) |
-| `FUNCTIONS_WORKER_RUNTIME` | `python` | Required by the Functions host |
+| `FUNCTIONS_WORKER_RUNTIME` | `python` | Required for this Python MCP hosting setup |
+| `AzureWebJobsFeatureFlags` | `EnableMcpCustomHandlerPreview` | Enables MCP custom-handler preview behavior in local/dev environments |
 
 Add tool-specific secrets (API keys, connection strings) to `local.settings.json` under `Values` for local dev, and as Azure App Settings for production. Never commit secrets to source control.
+
+---
+
+## Deploy from a source repository (GitHub or Azure DevOps)
+
+This project is already `azd`-ready (`azure.yaml` is present), so the most efficient and recommended path is:
+
+1. **One-time bootstrap from your workstation** to provision Azure and configure CI/CD trust.
+2. **Commit/push only** for all future app updates.
+3. Let pipeline runs handle `azd provision`/`azd deploy` as needed.
+
+### Option A (recommended): GitHub + `azd pipeline config`
+
+Use this when your code is hosted in GitHub and you want least-maintenance CI/CD with OpenID Connect (OIDC).
+
+#### 1) Push this repo to GitHub
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin https://github.com/<org-or-user>/<repo>.git
+git push -u origin main
+```
+
+#### 2) Log in and initialize environment metadata
+
+```bash
+azd auth login
+azd env new <env-name>
+```
+
+#### 3) Provision once (creates Azure resources)
+
+```bash
+azd up
+```
+
+#### 4) Configure GitHub Actions pipeline via azd
+
+```bash
+azd pipeline config
+```
+
+When prompted:
+- Provider: **GitHub**
+- Auth: **OIDC/Federated credentials** (recommended default)
+- Repository: choose existing repo or let `azd` create one
+
+`azd` generates/updates workflow files under `.github/workflows/` and configures required Azure/GitHub trust.
+
+#### 5) Confirm runtime app setting once
+
+```bash
+az functionapp config appsettings set \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --settings FUNCTIONS_WORKER_RUNTIME=python
+```
+
+#### 6) Day-2 workflow
+
+For future changes:
+
+```bash
+git add .
+git commit -m "Describe change"
+git push
+```
+
+Push triggers GitHub Actions deployment automatically.
+
+---
+
+### Option B: Azure DevOps Repos + Azure Pipelines via `azd pipeline config`
+
+Use this when your code is in Azure DevOps and you want the same `azd`-managed deployment model.
+
+#### 1) Import/push the repo to Azure Repos
+
+Use Azure DevOps UI (**Repos → Import**) or standard git remote push:
+
+```bash
+git remote add azdo https://dev.azure.com/<org>/<project>/_git/<repo>
+git push -u azdo main
+```
+
+#### 2) Authenticate and provision (if not already done)
+
+```bash
+azd auth login
+azd env new <env-name>
+azd up
+```
+
+#### 3) Configure Azure Pipelines with azd
+
+```bash
+azd pipeline config
+```
+
+When prompted:
+- Provider: **Azure DevOps**
+- Select your organization/project/repository
+
+`azd` wires the service connection and pipeline definition for this project.
+
+#### 4) Confirm runtime app setting once
+
+```bash
+az functionapp config appsettings set \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --settings FUNCTIONS_WORKER_RUNTIME=python
+```
+
+#### 5) Day-2 workflow
+
+```bash
+git add .
+git commit -m "Describe change"
+git push
+```
+
+Push triggers Azure Pipelines deployment automatically.
+
+---
+
+### Validation checklist (dev → deploy)
+
+Before enabling CI/CD:
+
+1. Local run succeeds: `uv run func start`
+2. Tool discovery succeeds: MCP Inspector → `List Tools`
+3. One-time cloud deploy succeeds: `azd up`
+4. Cloud endpoint responds: `https://<funcappname>.azurewebsites.net/mcp`
+5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=python`
+
+This sequence is the shortest reliable path from local development to repeatable production deployment for this repo.
