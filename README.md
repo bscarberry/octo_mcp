@@ -22,7 +22,7 @@ server.py                    # FastMCP server — all tools defined here
 host.json                    # Azure Functions custom handler config (required)
 local.settings.example.json  # Template — copy to local.settings.json for local dev
 pyproject.toml               # Python project metadata and dependencies (uv)
-requirements.txt             # Azure remote build dependencies
+requirements.txt             # Azure deployment dependencies
 Dockerfile                   # Container image (optional)
 ```
 
@@ -410,7 +410,7 @@ $appSettingsArgs = @(
 az @appSettingsArgs
 ```
 
-Do not set `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` as Azure app settings on Flex Consumption. For this SKU, request remote build with the deployment command's `--build-remote true` flag instead.
+Do not set `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` as Azure app settings on Flex Consumption. Build dependencies locally in Linux with Docker for the most reliable deployment path, or request Azure remote build with the deployment command's `--build-remote true` flag.
 
 If you already tried to set `FUNCTIONS_WORKER_RUNTIME` and need to clean it up, run:
 
@@ -499,23 +499,43 @@ MY_API_KEY = os.environ.get("MY_API_KEY", "")
 
 ### 5. Deploy the code
 
-Azure remote build installs Python dependencies from `requirements.txt`. Keep it in sync with `pyproject.toml` when dependencies change.
+Keep `requirements.txt` in sync with `pyproject.toml` when dependencies change.
 
-Create a deployment zip from the repository root. If the working tree is committed, `git archive` is the cleanest option:
+The most reliable path for Flex Consumption is to build Linux-compatible Python dependencies into `.python_packages/lib/site-packages`, include that folder in the zip, and deploy without Azure remote build. This avoids current Oryx remote-build failures such as `/tmp/oryx/platforms/python/<version>/bin/pip: cannot execute: required file not found`.
 
-Bash or PowerShell:
+#### 5a. Build dependencies for Linux
 
-```bash
-git archive --format zip --output deploy.zip HEAD
+From Windows PowerShell, use Docker so native wheels are built for Linux, not Windows:
+
+```powershell
+Remove-Item .python_packages -Recurse -Force -ErrorAction SilentlyContinue
+docker run --rm `
+  -v "${PWD}:/workspace" `
+  -w /workspace `
+  python:3.12-slim `
+  sh -c "python -m pip install --upgrade pip && python -m pip install --target .python_packages/lib/site-packages -r requirements.txt"
 ```
 
-If you need to deploy uncommitted local changes, create a zip and exclude local-only files:
+Bash:
+
+```bash
+rm -rf .python_packages
+docker run --rm \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  python:3.12-slim \
+  sh -c "python -m pip install --upgrade pip && python -m pip install --target .python_packages/lib/site-packages -r requirements.txt"
+```
+
+Use a Docker image that matches the Function App runtime, such as `python:3.11-slim` for Python 3.11 or `python:3.12-slim` for Python 3.12.
+
+#### 5b. Create a deployment zip
 
 Bash:
 
 ```bash
 zip -r deploy.zip . \
-  -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
+  -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc" "deploy.zip"
 ```
 
 PowerShell:
@@ -527,7 +547,13 @@ Get-ChildItem -Force |
   Compress-Archive -DestinationPath deploy.zip -Force
 ```
 
-Deploy it with a remote build so Azure installs the Python dependencies for Linux:
+Confirm the package includes both app files and dependencies:
+
+```powershell
+tar -tf deploy.zip | Select-String "requirements.txt|server.py|.python_packages"
+```
+
+#### 5c. Deploy without remote build
 
 Bash:
 
@@ -535,8 +561,7 @@ Bash:
 az functionapp deployment source config-zip \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --src deploy.zip \
-  --build-remote true
+  --src deploy.zip
 ```
 
 PowerShell:
@@ -546,15 +571,14 @@ $deployArgs = @(
   "functionapp", "deployment", "source", "config-zip",
   "--name", $FUNCTION_APP_NAME,
   "--resource-group", $RESOURCE_GROUP,
-  "--src", "deploy.zip",
-  "--build-remote", "true"
+  "--src", "deploy.zip"
 )
 az @deployArgs
 ```
 
 Recreate `deploy.zip` and re-run the same `az functionapp deployment source config-zip` command for code-only updates.
 
-If Oryx fails with `/tmp/oryx/platforms/python/3.11.8/bin/pip: cannot execute: required file not found`, the failure is in the remote build image before your app code runs. First confirm `requirements.txt` is included in `deploy.zip`, then retry once. If it still fails, recreate the Function App with a different supported Python runtime, such as `--runtime-version 3.12`, and deploy the same zip again.
+If you prefer Azure remote build, omit `.python_packages` from the zip and add `--build-remote true` to the deploy command. If Oryx fails with `/tmp/oryx/platforms/python/<version>/bin/pip: cannot execute: required file not found`, use the local Linux dependency build above instead.
 
 ### 6. Verify the deployment
 
@@ -702,8 +726,9 @@ Key design decisions:
 | `/api/mcp` returns 404 | Default `/api` prefix not stripped | Ensure `configurationProfile: "mcp-custom-handler"` is set in `host.json` |
 | `az functionapp create` fails for Flex Consumption | Region or Azure CLI version does not support Flex Consumption | Run `az functionapp list-flexconsumption-locations -o table` and update Azure CLI |
 | `The system cannot find the file specified` from `az functionapp create` on Windows | Azure CLI install/path issue or a missing bundled executable; if the one-line command fails too, this is not a PowerShell continuation problem | Run the Windows Azure CLI checks below, then repair or upgrade Azure CLI |
-| `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` is invalid on Flex Consumption | These remote-build app settings are not supported with this SKU | Delete both app settings and redeploy with `az functionapp deployment source config-zip --build-remote true` |
-| Zip deployment succeeds but dependencies are missing | Python dependencies were not built in Azure | Use `--build-remote true`; do not add `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` on Flex Consumption |
+| `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` is invalid on Flex Consumption | These remote-build app settings are not supported with this SKU | Delete both app settings; use the Docker-built `.python_packages` deployment path or deploy with `--build-remote true` without those app settings |
+| Oryx fails with `/tmp/oryx/platforms/python/<version>/bin/pip: cannot execute` | Azure remote build image failure before app code runs | Build dependencies locally in Linux with Docker, include `.python_packages` in `deploy.zip`, and deploy without `--build-remote` |
+| Zip deployment succeeds but dependencies are missing | Python dependencies were not included in the zip and remote build was not used | Confirm `deploy.zip` contains `.python_packages/lib/site-packages`, or retry Azure remote build with `--build-remote true` |
 | Cold start timeouts (Azure) | Flex Consumption cold start | Keep `server.py` module-level init minimal |
 
 ### Windows Azure CLI checks
@@ -821,6 +846,8 @@ jobs:
 
       - name: Create deployment package
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install --target .python_packages/lib/site-packages -r requirements.txt
           zip -r deploy.zip . \
             -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
 
@@ -829,8 +856,7 @@ jobs:
           az functionapp deployment source config-zip \
             --name "${{ vars.AZURE_FUNCTIONAPP_NAME }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --src deploy.zip \
-            --build-remote true
+            --src deploy.zip
 ```
 
 #### 4. Day-2 workflow
@@ -882,13 +908,14 @@ steps:
       scriptType: bash
       scriptLocation: inlineScript
       inlineScript: |
+        python -m pip install --upgrade pip
+        python -m pip install --target .python_packages/lib/site-packages -r requirements.txt
         zip -r "$(Build.ArtifactStagingDirectory)/deploy.zip" . \
           -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
         az functionapp deployment source config-zip \
           --name "<function-app-name>" \
           --resource-group "<resource-group>" \
-          --src "$(Build.ArtifactStagingDirectory)/deploy.zip" \
-          --build-remote true
+          --src "$(Build.ArtifactStagingDirectory)/deploy.zip"
 ```
 
 #### 4. Day-2 workflow

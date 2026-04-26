@@ -55,7 +55,7 @@ Downstream APIs / Services (Panther, Graph, Defender, etc.)
 ├── host.json                  # Azure Functions custom handler config (REQUIRED)
 ├── local.settings.json        # Local dev env vars (NOT committed to source control)
 ├── pyproject.toml             # Python project metadata and uv dependencies
-├── requirements.txt           # Azure remote build dependencies
+├── requirements.txt           # Azure deployment dependencies
 └── uv.lock                    # Locked dependencies for reproducible builds
 ```
 
@@ -260,9 +260,8 @@ not affect `server.py` or `host.json`.
 
 ## Dependency Management
 
-This project uses **uv** for Python package management (not pip directly).
-Azure remote build installs from `requirements.txt`, so keep that file in sync with
-`pyproject.toml` when dependencies change.
+This project uses **uv** for local Python package management. Azure deployment uses
+`requirements.txt`, so keep that file in sync with `pyproject.toml` when dependencies change.
 
 ### Adding a dependency
 
@@ -335,17 +334,16 @@ az functionapp config appsettings set \
 ```
 
 Do not add `FUNCTIONS_WORKER_RUNTIME` to Azure app settings on Flex Consumption. The runtime is set when the app is created with `--runtime python --runtime-version 3.11`. Keep `FUNCTIONS_WORKER_RUNTIME=python` only in `local.settings.json` for local `func start`.
-Do not add `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` to Azure app settings on Flex Consumption. Request remote build with the deployment command's `--build-remote true` flag instead.
+Do not add `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` to Azure app settings on Flex Consumption. Prefer building Linux-compatible dependencies into `.python_packages/lib/site-packages` before zipping. Remote build can be requested with `--build-remote true`, but if Oryx fails with a bundled `pip` error, use the local Linux dependency build path.
 
-Deploy code from the repository root:
+Deploy code from the repository root after `.python_packages/lib/site-packages` has been populated on Linux:
 
 ```bash
-git archive --format zip --output deploy.zip HEAD
+zip -r deploy.zip . -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc" "deploy.zip"
 az functionapp deployment source config-zip \
   --name <function-app-name> \
   --resource-group <resource-group> \
-  --src deploy.zip \
-  --build-remote true
+  --src deploy.zip
 ```
 
 Subsequent code-only updates can recreate `deploy.zip` and rerun the same deployment command.
