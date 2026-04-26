@@ -55,6 +55,7 @@ Downstream APIs / Services (Panther, Graph, Defender, etc.)
 ├── host.json                  # Azure Functions custom handler config (REQUIRED)
 ├── local.settings.json        # Local dev env vars (NOT committed to source control)
 ├── pyproject.toml             # Python project metadata and uv dependencies
+├── requirements.txt           # Azure remote build dependencies
 └── uv.lock                    # Locked dependencies for reproducible builds
 ```
 
@@ -260,6 +261,8 @@ not affect `server.py` or `host.json`.
 ## Dependency Management
 
 This project uses **uv** for Python package management (not pip directly).
+Azure remote build installs from `requirements.txt`, so keep that file in sync with
+`pyproject.toml` when dependencies change.
 
 ### Adding a dependency
 

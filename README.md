@@ -22,6 +22,7 @@ server.py                    # FastMCP server — all tools defined here
 host.json                    # Azure Functions custom handler config (required)
 local.settings.example.json  # Template — copy to local.settings.json for local dev
 pyproject.toml               # Python project metadata and dependencies (uv)
+requirements.txt             # Azure remote build dependencies
 Dockerfile                   # Container image (optional)
 ```
 
@@ -498,6 +499,8 @@ MY_API_KEY = os.environ.get("MY_API_KEY", "")
 
 ### 5. Deploy the code
 
+Azure remote build installs Python dependencies from `requirements.txt`. Keep it in sync with `pyproject.toml` when dependencies change.
+
 Create a deployment zip from the repository root. If the working tree is committed, `git archive` is the cleanest option:
 
 Bash or PowerShell:
@@ -550,6 +553,8 @@ az @deployArgs
 ```
 
 Recreate `deploy.zip` and re-run the same `az functionapp deployment source config-zip` command for code-only updates.
+
+If Oryx fails with `/tmp/oryx/platforms/python/3.11.8/bin/pip: cannot execute: required file not found`, the failure is in the remote build image before your app code runs. First confirm `requirements.txt` is included in `deploy.zip`, then retry once. If it still fails, recreate the Function App with a different supported Python runtime, such as `--runtime-version 3.12`, and deploy the same zip again.
 
 ### 6. Verify the deployment
 

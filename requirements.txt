@@ -1,0 +1,3 @@
+mcp[cli]
+httpx
+azure-identity
