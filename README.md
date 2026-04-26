@@ -22,8 +22,7 @@ server.py                    # FastMCP server — all tools defined here
 host.json                    # Azure Functions custom handler config (required)
 local.settings.example.json  # Template — copy to local.settings.json for local dev
 pyproject.toml               # Python project metadata and dependencies (uv)
-azure.yaml                   # Azure Developer CLI (azd) project config
-Dockerfile                   # Container image (optional; azd deploy preferred)
+Dockerfile                   # Container image (optional)
 ```
 
 ---
@@ -264,127 +263,181 @@ Restart `uv run func start` after adding tools.
 
 ### Prerequisites
 
-- [Azure Developer CLI (azd)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd):
-  ```bash
-  # macOS
-  brew tap azure/azd && brew install azd
-
-  # Windows (winget)
-  winget install Microsoft.Azd
-
-  # Script
-  curl -fsSL https://aka.ms/install-azd.sh | bash   # macOS/Linux
-  powershell -ex AllSigned -c "Invoke-RestMethod 'https://aka.ms/install-azd.ps1' | Invoke-Expression"  # Windows
-  ```
-  Verify: `azd version`
-
 - An Azure subscription with permission to create resources (Contributor or Owner role)
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) (optional but useful for post-deploy config):
+- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli):
   ```bash
-  winget install Microsoft.AzureCLI   # Windows
-  brew install azure-cli              # macOS
+  # Windows (winget)
+  winget install Microsoft.AzureCLI
+
+  # macOS
+  brew install azure-cli
+
+  # Linux
+  curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
   ```
+  Verify: `az version`
 
-### Deploy
+- Azure Functions Core Tools v4:
+  ```bash
+  winget install Microsoft.AzureFunctionsCoreTools   # Windows
+  brew tap azure/functions && brew install azure-functions-core-tools@4   # macOS
+  ```
+  Verify: `func --version`
 
-```bash
-azd auth login
-azd version
-azd up
-```
+- A globally unique Function App name. Function App names allow lowercase letters, numbers, and hyphens.
 
-`azd up` will:
-1. Prompt you to select an Azure subscription and region
-2. Provision a **Flex Consumption** Function App, Storage Account, and App Service Plan
-3. Deploy the application code
-
-This takes 3–5 minutes on first run. You will see the deployed Function App URL at the end.
-
-### Important: this repo requires an `infra/main.bicep` file for `azd up`
-
-`azd up` runs **provision + deploy**. Provisioning requires Bicep infrastructure files, and by default `azd` looks for:
-
-```text
-infra/main.bicep
-```
-
-If that file does not exist, provisioning fails with an error like:
-
-```text
-failed to compile bicep template ... Could not find a part of the path '...\\infra\\main.bicep'
-```
-
-Before running `azd up`, confirm the file exists:
+### 1. Sign in and choose a subscription
 
 ```bash
-# macOS / Linux
-test -f infra/main.bicep && echo "infra/main.bicep found"
-
-# Windows (PowerShell)
-Test-Path .\infra\main.bicep
+az login
+az account set --subscription "<subscription-id-or-name>"
 ```
 
-If `infra/main.bicep` is missing, use one of these options:
-
-1. Add the `infra/` folder from the source/template that this repo was created from, then run `azd up` again.
-2. If your infrastructure is already provisioned, skip provisioning and run deploy only:
-
-   ```bash
-   azd deploy
-   ```
-
-3. If you intended to create a brand-new azd project from existing code, re-run project initialization with infrastructure generation first, then run `azd up`.
-
-Also update azd when prompted (for example, `winget upgrade Microsoft.Azd` on Windows) before retrying.
-
-For code-only updates (after infrastructure is already provisioned):
+### 2. Set deployment variables
 
 ```bash
-azd deploy
+RESOURCE_GROUP="rg-octo-mcp"
+LOCATION="eastus"
+STORAGE_ACCOUNT="octomcp$RANDOM"
+FUNCTION_APP_NAME="octo-mcp-<unique-suffix>"
 ```
 
-### Required App Setting after deploy
+PowerShell:
 
-For this MCP hosting pattern, keep `FUNCTIONS_WORKER_RUNTIME=python` and make sure the MCP custom-handler profile remains enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`).  
-If you set `FUNCTIONS_WORKER_RUNTIME=custom` on a Python Function App stack, you can hit startup errors like:
-`Microsoft.Azure.WebJobs.Script.Grpc: WorkerConfig for runtime: custom not found.`
+```powershell
+$RESOURCE_GROUP="rg-octo-mcp"
+$LOCATION="eastus"
+$STORAGE_ACCOUNT="octomcp$(Get-Random)"
+$FUNCTION_APP_NAME="octo-mcp-<unique-suffix>"
+```
 
-Validate this setting immediately after `azd up`:
+### 3. Create Azure resources
+
+This creates a resource group, storage account, and Python Function App in the Flex Consumption plan.
 
 ```bash
-az functionapp config appsettings list \
-  --name <function-app-name> \
-  --resource-group <resource-group> \
-  --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value" -o tsv
+az group create \
+  --name "$RESOURCE_GROUP" \
+  --location "$LOCATION"
+
+az storage account create \
+  --name "$STORAGE_ACCOUNT" \
+  --resource-group "$RESOURCE_GROUP" \
+  --location "$LOCATION" \
+  --sku Standard_LRS \
+  --allow-blob-public-access false
+
+az functionapp create \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$FUNCTION_APP_NAME" \
+  --storage-account "$STORAGE_ACCOUNT" \
+  --flexconsumption-location "$LOCATION" \
+  --runtime python \
+  --runtime-version 3.11
 ```
 
-If the value is not `custom`, set it:
+Use `az functionapp list-flexconsumption-locations -o table` if you need to find a region that supports Flex Consumption.
+
+### 4. Configure required app settings
+
+For this MCP hosting pattern, keep `FUNCTIONS_WORKER_RUNTIME=python` and make sure the MCP custom-handler profile remains enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`). The custom handler preview flag is also required in Azure.
 
 ```bash
 az functionapp config appsettings set \
-  --name <function-app-name> \
-  --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=python
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --settings \
+    FUNCTIONS_WORKER_RUNTIME=python \
+    AzureWebJobsFeatureFlags=EnableMcpCustomHandlerPreview \
+    CUSTOM_HANDLER_PORT=8000 \
+    SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+    ENABLE_ORYX_BUILD=true \
+    PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages
 ```
 
-### Set additional environment variables in Azure
+If you set `FUNCTIONS_WORKER_RUNTIME=custom` on a Python Function App stack, you can hit startup errors like:
+`Microsoft.Azure.WebJobs.Script.Grpc: WorkerConfig for runtime: custom not found.`
+
+Validate the runtime setting:
+
+```bash
+az functionapp config appsettings list \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value" -o tsv
+```
 
 For tools that require API keys or secrets, set them as App Settings:
 
 ```bash
 az functionapp config appsettings set \
-  --name <function-app-name> \
-  --resource-group <resource-group> \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
   --settings MY_API_KEY=your_value
 ```
-
-You can find `<function-app-name>` and `<resource-group>` in the `azd` output or in the Azure Portal.
 
 Access them in `server.py` via `os.environ`:
 
 ```python
 import os
 MY_API_KEY = os.environ.get("MY_API_KEY", "")
+```
+
+### 5. Deploy the code
+
+Create a deployment zip from the repository root. If the working tree is committed, `git archive` is the cleanest option:
+
+```bash
+git archive --format zip --output deploy.zip HEAD
+```
+
+If you need to deploy uncommitted local changes, create a zip and exclude local-only files:
+
+```bash
+zip -r deploy.zip . \
+  -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
+```
+
+PowerShell:
+
+```powershell
+$exclude = @(".venv", ".azurite", ".git", "local.settings.json", "__pycache__", "deploy.zip")
+Get-ChildItem -Force |
+  Where-Object { $exclude -notcontains $_.Name } |
+  Compress-Archive -DestinationPath deploy.zip -Force
+```
+
+Deploy it with a remote build so Azure installs the Python dependencies for Linux:
+
+```bash
+az functionapp deployment source config-zip \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --src deploy.zip \
+  --build-remote true
+```
+
+Recreate `deploy.zip` and re-run the same `az functionapp deployment source config-zip` command for code-only updates.
+
+### 6. Verify the deployment
+
+```bash
+az functionapp show \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "defaultHostName" -o tsv
+
+curl -X POST "https://${FUNCTION_APP_NAME}.azurewebsites.net/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+To view logs while testing:
+
+```bash
+az webapp log tail \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP"
 ```
 
 ### MCP endpoint URLs
@@ -396,7 +449,7 @@ MY_API_KEY = os.environ.get("MY_API_KEY", "")
 
 ### Connect MCP clients to the deployed server
 
-Replace `<funcappname>` with your actual Function App name from the `azd up` output.
+Replace `<funcappname>` with your actual Function App name.
 
 #### Claude Code (CLI)
 
@@ -488,8 +541,8 @@ Key design decisions:
 | Claude Desktop: "not valid MCP server configurations" | Claude Desktop doesn't support `"type": "http"` directly | Use `mcp-remote` bridge — see Claude Desktop instructions above |
 | Tools not appearing in client | Server not initialized or wrong URL | Check MCP Inspector → List Tools; verify URL ends in `/mcp` |
 | `/api/mcp` returns 404 | Default `/api` prefix not stripped | Ensure `configurationProfile: "mcp-custom-handler"` is set in `host.json` |
-| `azd up` fails on first run | Missing permissions or subscription not set | Run `azd auth login` and confirm the right subscription |
-| `azd up` fails with `Could not find ...\\infra\\main.bicep` | Infrastructure template file is missing | Add `infra/main.bicep` (and related `infra/` files) to the repo, or run `azd deploy` if infra is already provisioned |
+| `az functionapp create` fails for Flex Consumption | Region or Azure CLI version does not support Flex Consumption | Run `az functionapp list-flexconsumption-locations -o table` and update Azure CLI |
+| Zip deployment succeeds but dependencies are missing | Python dependencies were not built in Azure | Use `--build-remote true` and keep `SCM_DO_BUILD_DURING_DEPLOYMENT=true` |
 | Cold start timeouts (Azure) | Flex Consumption cold start | Keep `server.py` module-level init minimal |
 
 ---
@@ -506,19 +559,13 @@ Add tool-specific secrets (API keys, connection strings) to `local.settings.json
 
 ---
 
-## Deploy from a source repository (GitHub or Azure DevOps)
+## Deploy from a source repository
 
-This project is already `azd`-ready (`azure.yaml` is present), so the most efficient and recommended path is:
+Provision Azure once with the Azure CLI commands above. After the Function App exists, use your source host to publish code updates to that same app.
 
-1. **One-time bootstrap from your workstation** to provision Azure and configure CI/CD trust.
-2. **Commit/push only** for all future app updates.
-3. Let pipeline runs handle `azd provision`/`azd deploy` as needed.
+### GitHub Actions
 
-### Option A (recommended): GitHub + `azd pipeline config`
-
-Use this when your code is hosted in GitHub and you want least-maintenance CI/CD with OpenID Connect (OIDC).
-
-#### 1) Push this repo to GitHub
+#### 1. Push this repo to GitHub
 
 ```bash
 git init
@@ -529,33 +576,54 @@ git remote add origin https://github.com/<org-or-user>/<repo>.git
 git push -u origin main
 ```
 
-#### 2) Log in and initialize environment metadata
+#### 2. Create an Azure service principal
 
 ```bash
-azd auth login
-azd env new <env-name>
+az ad sp create-for-rbac \
+  --name "octo-mcp-github-deploy" \
+  --role contributor \
+  --scopes "/subscriptions/<subscription-id>/resourceGroups/<resource-group>" \
+  --sdk-auth
 ```
 
-#### 3) Provision once (creates Azure resources)
+Add the JSON output as a GitHub Actions secret named `AZURE_CREDENTIALS`. Also add repository variables named `AZURE_FUNCTIONAPP_NAME` and `AZURE_RESOURCE_GROUP`.
 
-```bash
-azd up
+#### 3. Add a workflow
+
+Create `.github/workflows/deploy.yml`:
+
+```yaml
+name: Deploy Azure Function
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create deployment package
+        run: |
+          zip -r deploy.zip . \
+            -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
+
+      - name: Deploy
+        run: |
+          az functionapp deployment source config-zip \
+            --name "${{ vars.AZURE_FUNCTIONAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --src deploy.zip \
+            --build-remote true
 ```
 
-#### 4) Configure GitHub Actions pipeline via azd
-
-```bash
-azd pipeline config
-```
-
-When prompted:
-- Provider: **GitHub**
-- Auth: **OIDC/Federated credentials** (recommended default)
-- Repository: choose existing repo or let `azd` create one
-
-`azd` generates/updates workflow files under `.github/workflows/` and configures required Azure/GitHub trust.
-
-#### 5) Confirm runtime app setting once
+#### 4. Confirm runtime app setting once
 
 ```bash
 az functionapp config appsettings set \
@@ -564,7 +632,7 @@ az functionapp config appsettings set \
   --settings FUNCTIONS_WORKER_RUNTIME=python
 ```
 
-#### 6) Day-2 workflow
+#### 5. Day-2 workflow
 
 For future changes:
 
@@ -578,49 +646,51 @@ Push triggers GitHub Actions deployment automatically.
 
 ---
 
-### Option B: Azure DevOps Repos + Azure Pipelines via `azd pipeline config`
+### Azure DevOps Pipelines
 
-Use this when your code is in Azure DevOps and you want the same `azd`-managed deployment model.
+Use this when your code is in Azure DevOps and you want pipeline-based deployment with Azure CLI.
 
-#### 1) Import/push the repo to Azure Repos
+#### 1. Import/push the repo to Azure Repos
 
 Use Azure DevOps UI (**Repos → Import**) or standard git remote push:
 
 ```bash
-git remote add azdo https://dev.azure.com/<org>/<project>/_git/<repo>
-git push -u azdo main
+git remote add azuredevops https://dev.azure.com/<org>/<project>/_git/<repo>
+git push -u azuredevops main
 ```
 
-#### 2) Authenticate and provision (if not already done)
+#### 2. Create a pipeline service connection
 
-```bash
-azd auth login
-azd env new <env-name>
-azd up
+In Azure DevOps, create an Azure Resource Manager service connection scoped to the resource group that contains the Function App.
+
+#### 3. Add a pipeline
+
+Create `azure-pipelines.yml`:
+
+```yaml
+trigger:
+  - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: "<service-connection-name>"
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        zip -r "$(Build.ArtifactStagingDirectory)/deploy.zip" . \
+          -x ".venv/*" ".azurite/*" ".git/*" "local.settings.json" "__pycache__/*" "*.pyc"
+        az functionapp deployment source config-zip \
+          --name "<function-app-name>" \
+          --resource-group "<resource-group>" \
+          --src "$(Build.ArtifactStagingDirectory)/deploy.zip" \
+          --build-remote true
 ```
 
-#### 3) Configure Azure Pipelines with azd
-
-```bash
-azd pipeline config
-```
-
-When prompted:
-- Provider: **Azure DevOps**
-- Select your organization/project/repository
-
-`azd` wires the service connection and pipeline definition for this project.
-
-#### 4) Confirm runtime app setting once
-
-```bash
-az functionapp config appsettings set \
-  --name <function-app-name> \
-  --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=python
-```
-
-#### 5) Day-2 workflow
+#### 4. Day-2 workflow
 
 ```bash
 git add .
@@ -638,7 +708,7 @@ Before enabling CI/CD:
 
 1. Local run succeeds: `uv run func start`
 2. Tool discovery succeeds: MCP Inspector → `List Tools`
-3. One-time cloud deploy succeeds: `azd up`
+3. One-time cloud deploy succeeds: `az functionapp deployment source config-zip`
 4. Cloud endpoint responds: `https://<funcappname>.azurewebsites.net/mcp`
 5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=python`
 

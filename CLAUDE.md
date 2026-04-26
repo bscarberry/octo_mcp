@@ -55,15 +55,7 @@ Downstream APIs / Services (Panther, Graph, Defender, etc.)
 ├── host.json                  # Azure Functions custom handler config (REQUIRED)
 ├── local.settings.json        # Local dev env vars (NOT committed to source control)
 ├── pyproject.toml             # Python project metadata and uv dependencies
-├── uv.lock                    # Locked dependencies for reproducible builds
-├── azure.yaml                 # Azure Developer CLI (azd) project config
-└── infra/                     # Bicep IaC for provisioning Azure resources
-    ├── main.bicep
-    ├── main.parameters.json
-    └── app/
-        ├── app.bicep          # Function App, storage, identity
-        ├── entra.bicep        # App Registration for EasyAuth / OIDC
-        └── rbac.bicep         # Role assignments for managed identity
+└── uv.lock                    # Locked dependencies for reproducible builds
 ```
 
 ---
@@ -239,7 +231,10 @@ support) will automatically handle the OAuth flow when they receive the 401 chal
 
 **Pre-authorized client IDs** are configured at deployment time:
 ```bash
-azd env set PRE_AUTHORIZED_CLIENT_IDS <client-id>
+az functionapp config appsettings set \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --settings PRE_AUTHORIZED_CLIENT_IDS=<client-id>
 ```
 
 This allows specific apps (e.g., VS Code `aebc6443-996d-45c2-90f0-388ff96faa56`, Copilot Studio)
@@ -307,12 +302,50 @@ dependencies = [
 ### Deploy to Azure
 
 ```bash
-azd auth login
-azd up
+az login
+az group create --name <resource-group> --location <region>
+az storage account create \
+  --name <storage-account> \
+  --resource-group <resource-group> \
+  --location <region> \
+  --sku Standard_LRS \
+  --allow-blob-public-access false
+az functionapp create \
+  --resource-group <resource-group> \
+  --name <function-app-name> \
+  --storage-account <storage-account> \
+  --flexconsumption-location <region> \
+  --runtime python \
+  --runtime-version 3.11
 ```
 
-`azd up` provisions all Bicep resources and deploys the Function App code.  
-Subsequent code-only updates can use `azd deploy` (faster, skips infra provisioning).
+Configure the custom handler settings:
+
+```bash
+az functionapp config appsettings set \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --settings \
+    FUNCTIONS_WORKER_RUNTIME=python \
+    AzureWebJobsFeatureFlags=EnableMcpCustomHandlerPreview \
+    CUSTOM_HANDLER_PORT=8000 \
+    SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+    ENABLE_ORYX_BUILD=true \
+    PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages
+```
+
+Deploy code from the repository root:
+
+```bash
+git archive --format zip --output deploy.zip HEAD
+az functionapp deployment source config-zip \
+  --name <function-app-name> \
+  --resource-group <resource-group> \
+  --src deploy.zip \
+  --build-remote true
+```
+
+Subsequent code-only updates can recreate `deploy.zip` and rerun the same deployment command.
 
 ### Flex Consumption Plan
 
@@ -332,7 +365,7 @@ az functionapp config appsettings set \
   --settings KEY=VALUE
 ```
 
-Or define them in Bicep under `app/app.bicep` in the `appSettings` array.
+Keep production settings in Azure App Settings. Keep local-only settings in `local.settings.json`.
 
 ---
 
