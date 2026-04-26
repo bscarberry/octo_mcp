@@ -295,6 +295,10 @@ az account set --subscription "<subscription-id-or-name>"
 
 ### 2. Set deployment variables
 
+Bash examples use `\` for line continuation and `$VARIABLE` syntax. PowerShell examples use argument arrays (`@(...)`) and `az @args` to avoid fragile backtick line continuations. Backtick continuations also work in PowerShell, but a trailing space after a backtick breaks the command in a hard-to-see way.
+
+Bash:
+
 ```bash
 RESOURCE_GROUP="rg-octo-mcp"
 LOCATION="eastus"
@@ -305,15 +309,17 @@ FUNCTION_APP_NAME="octo-mcp-<unique-suffix>"
 PowerShell:
 
 ```powershell
-$RESOURCE_GROUP="rg-octo-mcp"
-$LOCATION="eastus"
-$STORAGE_ACCOUNT="octomcp$(Get-Random)"
-$FUNCTION_APP_NAME="octo-mcp-<unique-suffix>"
+$RESOURCE_GROUP = "rg-octo-mcp"
+$LOCATION = "eastus"
+$STORAGE_ACCOUNT = "octomcp$(Get-Random)"
+$FUNCTION_APP_NAME = "octo-mcp-<unique-suffix>"
 ```
 
 ### 3. Create Azure resources
 
 This creates a resource group, storage account, and Python Function App in the Flex Consumption plan.
+
+Bash:
 
 ```bash
 az group create \
@@ -336,44 +342,151 @@ az functionapp create \
   --runtime-version 3.11
 ```
 
+PowerShell:
+
+```powershell
+$groupArgs = @(
+  "group", "create",
+  "--name", $RESOURCE_GROUP,
+  "--location", $LOCATION
+)
+az @groupArgs
+
+$storageArgs = @(
+  "storage", "account", "create",
+  "--name", $STORAGE_ACCOUNT,
+  "--resource-group", $RESOURCE_GROUP,
+  "--location", $LOCATION,
+  "--sku", "Standard_LRS",
+  "--allow-blob-public-access", "false"
+)
+az @storageArgs
+
+$functionArgs = @(
+  "functionapp", "create",
+  "--resource-group", $RESOURCE_GROUP,
+  "--name", $FUNCTION_APP_NAME,
+  "--storage-account", $STORAGE_ACCOUNT,
+  "--flexconsumption-location", $LOCATION,
+  "--runtime", "python",
+  "--runtime-version", "3.11"
+)
+az @functionArgs
+```
+
 Use `az functionapp list-flexconsumption-locations -o table` if you need to find a region that supports Flex Consumption.
 
 ### 4. Configure required app settings
 
-For this MCP hosting pattern, keep `FUNCTIONS_WORKER_RUNTIME=python` and make sure the MCP custom-handler profile remains enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`). The custom handler preview flag is also required in Azure.
+For this MCP hosting pattern, keep the MCP custom-handler profile enabled in `host.json` (`configurationProfile: "mcp-custom-handler"`). The custom handler preview flag is also required in Azure.
+
+Do not set `FUNCTIONS_WORKER_RUNTIME` as an Azure app setting on Flex Consumption. The runtime is configured when the Function App is created with `az functionapp create --runtime python --runtime-version 3.11`. `FUNCTIONS_WORKER_RUNTIME=python` is still used in `local.settings.json` for local development, but Flex Consumption rejects it in Azure app settings.
+
+Bash:
 
 ```bash
 az functionapp config appsettings set \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --settings \
-    FUNCTIONS_WORKER_RUNTIME=python \
     AzureWebJobsFeatureFlags=EnableMcpCustomHandlerPreview \
     CUSTOM_HANDLER_PORT=8000 \
-    SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-    ENABLE_ORYX_BUILD=true \
     PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages
 ```
 
-If you set `FUNCTIONS_WORKER_RUNTIME=custom` on a Python Function App stack, you can hit startup errors like:
-`Microsoft.Azure.WebJobs.Script.Grpc: WorkerConfig for runtime: custom not found.`
+PowerShell:
 
-Validate the runtime setting:
+```powershell
+$appSettingsArgs = @(
+  "functionapp", "config", "appsettings", "set",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--settings",
+  "AzureWebJobsFeatureFlags=EnableMcpCustomHandlerPreview",
+  "CUSTOM_HANDLER_PORT=8000",
+  "PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages"
+)
+az @appSettingsArgs
+```
+
+Do not set `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` as Azure app settings on Flex Consumption. For this SKU, request remote build with the deployment command's `--build-remote true` flag instead.
+
+If you already tried to set `FUNCTIONS_WORKER_RUNTIME` and need to clean it up, run:
+
+Bash:
 
 ```bash
-az functionapp config appsettings list \
+az functionapp config appsettings delete \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --query "[?name=='FUNCTIONS_WORKER_RUNTIME'].value" -o tsv
+  --setting-names FUNCTIONS_WORKER_RUNTIME
+```
+
+PowerShell:
+
+```powershell
+$deleteRuntimeArgs = @(
+  "functionapp", "config", "appsettings", "delete",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--setting-names", "FUNCTIONS_WORKER_RUNTIME"
+)
+az @deleteRuntimeArgs
+```
+
+If you already set the unsupported remote-build app settings, remove them before deploying:
+
+Bash:
+
+```bash
+az functionapp config appsettings delete \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --setting-names SCM_DO_BUILD_DURING_DEPLOYMENT ENABLE_ORYX_BUILD
+```
+
+PowerShell:
+
+```powershell
+$deleteBuildSettingsArgs = @(
+  "functionapp", "config", "appsettings", "delete",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--setting-names", "SCM_DO_BUILD_DURING_DEPLOYMENT", "ENABLE_ORYX_BUILD"
+)
+az @deleteBuildSettingsArgs
+```
+
+Validate that the Function App was created with the Python runtime:
+
+```bash
+az functionapp show \
+  --name "$FUNCTION_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "{runtime: siteConfig.linuxFxVersion, kind: kind}" -o json
 ```
 
 For tools that require API keys or secrets, set them as App Settings:
+
+Bash:
 
 ```bash
 az functionapp config appsettings set \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --settings MY_API_KEY=your_value
+```
+
+PowerShell:
+
+```powershell
+$secretArgs = @(
+  "functionapp", "config", "appsettings", "set",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--settings", "MY_API_KEY=your_value"
+)
+az @secretArgs
 ```
 
 Access them in `server.py` via `os.environ`:
@@ -387,11 +500,15 @@ MY_API_KEY = os.environ.get("MY_API_KEY", "")
 
 Create a deployment zip from the repository root. If the working tree is committed, `git archive` is the cleanest option:
 
+Bash or PowerShell:
+
 ```bash
 git archive --format zip --output deploy.zip HEAD
 ```
 
 If you need to deploy uncommitted local changes, create a zip and exclude local-only files:
+
+Bash:
 
 ```bash
 zip -r deploy.zip . \
@@ -409,6 +526,8 @@ Get-ChildItem -Force |
 
 Deploy it with a remote build so Azure installs the Python dependencies for Linux:
 
+Bash:
+
 ```bash
 az functionapp deployment source config-zip \
   --name "$FUNCTION_APP_NAME" \
@@ -417,9 +536,24 @@ az functionapp deployment source config-zip \
   --build-remote true
 ```
 
+PowerShell:
+
+```powershell
+$deployArgs = @(
+  "functionapp", "deployment", "source", "config-zip",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--src", "deploy.zip",
+  "--build-remote", "true"
+)
+az @deployArgs
+```
+
 Recreate `deploy.zip` and re-run the same `az functionapp deployment source config-zip` command for code-only updates.
 
 ### 6. Verify the deployment
+
+Bash:
 
 ```bash
 az functionapp show \
@@ -430,6 +564,25 @@ az functionapp show \
 curl -X POST "https://${FUNCTION_APP_NAME}.azurewebsites.net/mcp" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+PowerShell:
+
+```powershell
+$showArgs = @(
+  "functionapp", "show",
+  "--name", $FUNCTION_APP_NAME,
+  "--resource-group", $RESOURCE_GROUP,
+  "--query", "defaultHostName",
+  "-o", "tsv"
+)
+az @showArgs
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "https://$FUNCTION_APP_NAME.azurewebsites.net/mcp" `
+  -ContentType "application/json" `
+  -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
 To view logs while testing:
@@ -536,14 +689,66 @@ Key design decisions:
 | `func: command not found` | Azure Functions Core Tools not installed | Install v4 (see prerequisites) |
 | `uv: command not found` | uv not installed | Install uv (see prerequisites) |
 | Port already in use (8000 or 7071) | Another process is running on those ports | Kill the process or change ports in `host.json` and `local.settings.json` |
-| `WorkerConfig for runtime: custom not found` | `FUNCTIONS_WORKER_RUNTIME` was set to `custom` on a Python stack app | Set `FUNCTIONS_WORKER_RUNTIME=python`, keep `configurationProfile: "mcp-custom-handler"` in `host.json`, then restart |
+| `FUNCTIONS_WORKER_RUNTIME` is invalid on Flex Consumption | Flex Consumption does not allow `FUNCTIONS_WORKER_RUNTIME` as an Azure app setting | Delete that app setting; the runtime is set by `az functionapp create --runtime python --runtime-version 3.11` |
+| `WorkerConfig for runtime: custom not found` | A non-Flex Python Function App was configured with `FUNCTIONS_WORKER_RUNTIME=custom` | For non-Flex apps, use `FUNCTIONS_WORKER_RUNTIME=python`; for Flex Consumption, do not set it as an app setting |
 | `AzureWebJobsStorage` connection error | Azurite not running | Start Azurite in a separate terminal |
 | Claude Desktop: "not valid MCP server configurations" | Claude Desktop doesn't support `"type": "http"` directly | Use `mcp-remote` bridge — see Claude Desktop instructions above |
 | Tools not appearing in client | Server not initialized or wrong URL | Check MCP Inspector → List Tools; verify URL ends in `/mcp` |
 | `/api/mcp` returns 404 | Default `/api` prefix not stripped | Ensure `configurationProfile: "mcp-custom-handler"` is set in `host.json` |
 | `az functionapp create` fails for Flex Consumption | Region or Azure CLI version does not support Flex Consumption | Run `az functionapp list-flexconsumption-locations -o table` and update Azure CLI |
-| Zip deployment succeeds but dependencies are missing | Python dependencies were not built in Azure | Use `--build-remote true` and keep `SCM_DO_BUILD_DURING_DEPLOYMENT=true` |
+| `The system cannot find the file specified` from `az functionapp create` on Windows | Azure CLI install/path issue or a missing bundled executable; if the one-line command fails too, this is not a PowerShell continuation problem | Run the Windows Azure CLI checks below, then repair or upgrade Azure CLI |
+| `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` is invalid on Flex Consumption | These remote-build app settings are not supported with this SKU | Delete both app settings and redeploy with `az functionapp deployment source config-zip --build-remote true` |
+| Zip deployment succeeds but dependencies are missing | Python dependencies were not built in Azure | Use `--build-remote true`; do not add `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` on Flex Consumption |
 | Cold start timeouts (Azure) | Flex Consumption cold start | Keep `server.py` module-level init minimal |
+
+### Windows Azure CLI checks
+
+If `az functionapp create` fails in PowerShell with `The system cannot find the file specified`, first run the command as a single line to rule out continuation syntax:
+
+```powershell
+az functionapp create --resource-group $RESOURCE_GROUP --name $FUNCTION_APP_NAME --storage-account $STORAGE_ACCOUNT --flexconsumption-location $LOCATION --runtime python --runtime-version 3.11
+```
+
+If the one-line command still fails, check the local Azure CLI installation:
+
+```powershell
+Get-Command az | Format-List Source,CommandType
+where.exe az
+Test-Path "C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe"
+az version
+az functionapp list-flexconsumption-locations -o table
+```
+
+For the MSI/winget install, `az` usually resolves to:
+
+```text
+C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd
+```
+
+That wrapper must be able to launch:
+
+```text
+C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe
+```
+
+If `python.exe` is missing, `az version` fails, or the Flex Consumption command still throws the file error, repair or update Azure CLI:
+
+```powershell
+winget upgrade Microsoft.AzureCLI
+```
+
+If upgrade does not fix it:
+
+```powershell
+winget uninstall Microsoft.AzureCLI
+winget install Microsoft.AzureCLI
+```
+
+To capture the exact failing Azure CLI operation:
+
+```powershell
+az functionapp create --resource-group $RESOURCE_GROUP --name $FUNCTION_APP_NAME --storage-account $STORAGE_ACCOUNT --flexconsumption-location $LOCATION --runtime python --runtime-version 3.11 --debug 2>&1 | Tee-Object az-functionapp-create-debug.log
+```
 
 ---
 
@@ -553,7 +758,7 @@ Key design decisions:
 |----------|---------|-------------|
 | `CUSTOM_HANDLER_PORT` | `8000` | Port the FastMCP server binds to — must match `host.json` |
 | `AzureWebJobsStorage` | `UseDevelopmentStorage=true` | Storage connection string (Azurite locally; real account in Azure) |
-| `FUNCTIONS_WORKER_RUNTIME` | `python` | Must stay `python` for this Functions + custom handler setup |
+| `FUNCTIONS_WORKER_RUNTIME` | `python` | Local-only setting for `local.settings.json`; do not add it to Azure app settings on Flex Consumption |
 
 Add tool-specific secrets (API keys, connection strings) to `local.settings.json` under `Values` for local dev, and as Azure App Settings for production. Never commit secrets to source control.
 
@@ -623,16 +828,7 @@ jobs:
             --build-remote true
 ```
 
-#### 4. Confirm runtime app setting once
-
-```bash
-az functionapp config appsettings set \
-  --name <function-app-name> \
-  --resource-group <resource-group> \
-  --settings FUNCTIONS_WORKER_RUNTIME=python
-```
-
-#### 5. Day-2 workflow
+#### 4. Day-2 workflow
 
 For future changes:
 
@@ -710,6 +906,6 @@ Before enabling CI/CD:
 2. Tool discovery succeeds: MCP Inspector → `List Tools`
 3. One-time cloud deploy succeeds: `az functionapp deployment source config-zip`
 4. Cloud endpoint responds: `https://<funcappname>.azurewebsites.net/mcp`
-5. App setting is correct in Azure: `FUNCTIONS_WORKER_RUNTIME=python`
+5. Runtime is correct in Azure: `siteConfig.linuxFxVersion` shows Python 3.11, and `FUNCTIONS_WORKER_RUNTIME` is not present in Azure app settings on Flex Consumption
 
 This sequence is the shortest reliable path from local development to repeatable production deployment for this repo.

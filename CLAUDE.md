@@ -326,13 +326,13 @@ az functionapp config appsettings set \
   --name <function-app-name> \
   --resource-group <resource-group> \
   --settings \
-    FUNCTIONS_WORKER_RUNTIME=python \
     AzureWebJobsFeatureFlags=EnableMcpCustomHandlerPreview \
     CUSTOM_HANDLER_PORT=8000 \
-    SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-    ENABLE_ORYX_BUILD=true \
     PYTHONPATH=/home/site/wwwroot/.python_packages/lib/site-packages
 ```
+
+Do not add `FUNCTIONS_WORKER_RUNTIME` to Azure app settings on Flex Consumption. The runtime is set when the app is created with `--runtime python --runtime-version 3.11`. Keep `FUNCTIONS_WORKER_RUNTIME=python` only in `local.settings.json` for local `func start`.
+Do not add `SCM_DO_BUILD_DURING_DEPLOYMENT` or `ENABLE_ORYX_BUILD` to Azure app settings on Flex Consumption. Request remote build with the deployment command's `--build-remote true` flag instead.
 
 Deploy code from the repository root:
 
